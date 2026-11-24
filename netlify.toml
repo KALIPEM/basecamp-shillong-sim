@@ -1,0 +1,7 @@
+[build]
+  publish = "."
+
+[[headers]]
+  for = "/model.b64.txt"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"
