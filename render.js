@@ -6,7 +6,7 @@ import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { MeshBVH } from 'three-mesh-bvh';
+import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 export const FT = 0.3048;
@@ -132,7 +132,7 @@ const ROOF_RE = /^(U_.*_Roof_|RoofDeck|RoofRail|Pergola|Solar_|Water_Tank|Yoga_M
 const GROOF_RE = /^G_.*_Roof_/;
 const UPPER_RE = /^(U_|Dorm[A-E]_|F1_|F2_|P_F|P_Dorm|WBalcony|Balcony_|Founders_Balcony|Gallery_Walkway|Gallery_Outer|Rail_Gallery|Rail_Balcony|Rail_ExtLanding1|Ext_Landing_1|Rail_WBalcony|Rail_Gallery_Courtyard)/;
 const classify = (n) => ROOF_RE.test(n) ? 'roof' : GROOF_RE.test(n) ? 'groof' : UPPER_RE.test(n) ? 'upper' : 'base';
-export const glassMats = []; export const pickables = []; export let collider = null; export const vehicles = {};
+export const glassMats = []; export const pickables = []; export const solidInfo = []; export let collider = null; export const vehicles = {};
 
 function boxUV(g) {
   const p = g.attributes.position, n = g.attributes.normal; const uv = new Float32Array(p.count * 2);
@@ -174,17 +174,17 @@ const PROPS = [
   [/^(Dorm[A-E]_Bunk\d+)_/, 'f:bedBunk', 'box'],
   [/^((?:Chef|F1|F2)_Bed)_/, 'f:bedDouble', 'box'],
   [/^(Desk_\d+_\d+|Booth_\d_Desk|Chef_Desk)_/, 'f:desk', 'box', 'chair'],
-  [/^(CoChair_\d+_\d+|Booth_\d_Chair|Meet_[NS]\d|Chef_Chair|Reception_Stool)_/, 'f:chairDesk', 'box', 'back'],
-  [/^(Act_Chair_\d_\d)_/, 'f:chair', 'box', 'back'],
-  [/^(Dorm[A-E]_WorkChair\d|F[12]_DeskChair)$/, 'f:chairDesk', 'box', 'table'],
-  [/^(Deck_Chair_\d_\d|Dorm[A-E]_WBal_Chair\d|Balcony_Chair_\d)$/, 'f:chair', 'box', 'table'],
-  [/^(Cafe_InStool_\d_\d|Pav_Stool_\d|Dorm[A-E]_Stool\d)$/, 'f:stoolBar', 'box'],
+  [/^(CoChair_\d+_\d+|Booth_\d_Chair|Meet_[NS]\d|Chef_Chair|Reception_Stool)_/, 'f:chairDesk', 'real', 'back'],
+  [/^(Act_Chair_\d_\d)_/, 'f:chair', 'real', 'back'],
+  [/^(Dorm[A-E]_WorkChair\d|F[12]_DeskChair)$/, 'f:chairDesk', 'real', 'table'],
+  [/^(Deck_Chair_\d_\d|Dorm[A-E]_WBal_Chair\d|Balcony_Chair_\d)$/, 'f:chair', 'real', 'table'],
+  [/^(Cafe_InStool_\d_\d|Pav_Stool_\d|Dorm[A-E]_Stool\d)$/, 'f:stoolBar', 'real'],
   [/^(Cafe_InTable_\d|Deck_Table_\d|Roof_Table_\d|Dorm[A-E]_WBal_Table)(?:_leg)?$/, 'f:tableRound', 'box'],
   [/^(Dining_Table\d|Meeting_Table|Folding_Table|Dorm[A-E]_Table)_(?:leg\d|top)$/, 'f:table', 'box'],
   [/^(Pav_Coffee|Reception_Coffee)_/, 'f:tableCoffee', 'box'],
-  [/^(Pav_Sofa\d|Reception_Sofa|F[12]_Sofa)(?:_?Back)?$/, 'f:loungeSofa', 'box', 'back'],
-  [/^(Washer_\d)(?:_door)?$/, 'f:washer', 'box', 'door'],
-  [/^(Toilet_\d)$/, 'f:toilet', 'box'],
+  [/^(Pav_Sofa\d|Reception_Sofa|F[12]_Sofa)(?:_?Back)?$/, 'f:loungeSofa', 'real', 'back'],
+  [/^(Washer_\d)(?:_door)?$/, 'f:washer', 'real', 'door'],
+  [/^(Toilet_\d)$/, 'f:toilet', 'real'],
   [/^(Pav_Plant)(?:er)?_(\d)$/, 'f:pottedPlant', 'u'],
   [/^(Planter_\d)_Green$/, BUSHES, 'scatter'],
   [/^(Tree_\d)_/, ['n:tree_pineTallA_detailed', 'n:tree_pineTallB_detailed', 'n:tree_detailed'], 'h'],
@@ -194,6 +194,7 @@ const PROPS = [
   [/^(WG\d_Flower_\d+)$/, FLOWERS, 'u'],
   [/^(Veg_\d+_\d+)$/, CROPS, 'u'],
 ];
+const REAL = { 'f:chair': [0.88, 1], 'f:chairDesk': [1.02, 1], 'f:stoolBar': [0.68, 1], 'f:loungeSofa': [0.82, 1.8], 'f:washer': [0.86, 1], 'f:toilet': [0.78, 1] };
 const propOf = (n) => { for (const r of PROPS) { const m = r[0].exec(n); if (m) return { key: m[1] + (m[2] && /^\d+$/.test(m[2]) ? '_' + m[2] : ''), rule: r }; } return null; };
 const hsh = (str) => { let h = 2166136261; for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 16777619); return (h >>> 0) / 4294967296; };
 function placeProps(inst, anchors) {
@@ -219,7 +220,7 @@ function placeProps(inst, anchors) {
     const pick = Array.isArray(asset) ? asset[Math.floor(r * asset.length)] : asset; const A = ASSETS[pick]; if (!A) continue;
     const ms = A.box.getSize(new THREE.Vector3()); const bottom = new THREE.Vector3(ctr.x, b.min.y, ctr.z);
     let ok = false;
-    if (mode === 'box') {
+    if (mode === 'box' || mode === 'real') {
       let dir = null; // which way the front should point
       if (face === 'back' && it.back) { const bc = it.back.getCenter(new THREE.Vector3()); dir = ctr.clone().sub(bc); }
       else if (face === 'door' && it.back) { dir = it.back.getCenter(new THREE.Vector3()).sub(ctr); }
@@ -228,7 +229,11 @@ function placeProps(inst, anchors) {
       if (dir && (Math.abs(dir.x) > 1e-3 || Math.abs(dir.z) > 1e-3)) { yaw = Math.abs(dir.x) > Math.abs(dir.z) ? (dir.x > 0 ? Math.PI / 2 : -Math.PI / 2) : (dir.z > 0 ? 0 : Math.PI); }
       else yaw = ((ms.x > ms.z) === (size.x > size.z)) ? 0 : Math.PI / 2;
       const swap = Math.abs(Math.sin(yaw)) > 0.5;
-      ok = add(pick, it.grp, bottom, yaw, (swap ? size.z : size.x) / ms.x, size.y / ms.y, (swap ? size.x : size.z) / ms.z, true);
+      if (mode === 'real') { // true-to-life size: uniform scale from a real height, optional stretch along the piece's length
+        const [H, maxS] = REAL[pick] || [size.y, 1]; const k = H / ms.y; const tx = swap ? size.z : size.x, tz = swap ? size.x : size.z;
+        const sx = ms.x >= ms.z ? Math.min(maxS, Math.max(1, tx / (ms.x * k))) : 1, sz = ms.z > ms.x ? Math.min(maxS, Math.max(1, tz / (ms.z * k))) : 1;
+        ok = add(pick, it.grp, bottom, yaw, k * sx, k, k * sz, true);
+      } else ok = add(pick, it.grp, bottom, yaw, (swap ? size.z : size.x) / ms.x, size.y / ms.y, (swap ? size.x : size.z) / ms.z, true);
     } else if (mode === 'h') { const k = size.y / ms.y; ok = add(pick, it.grp, bottom, r * 6.28, k, k, k, true); }
     else if (mode === 'hx') { const k = Math.min(size.x / ms.x, size.z / ms.z) * 1.1; ok = add(pick, it.grp, bottom, r * 6.28, k, size.y / ms.y, k, true); }
     else if (mode === 'u') { const k = Math.min(size.x / ms.x, size.z / ms.z, size.y / ms.y) * 1.15; ok = add(pick, it.grp, bottom, r * 6.28, k, k, k, true); }
@@ -248,6 +253,120 @@ function placeProps(inst, anchors) {
   return done;
 }
 
+// Layout fixes on top of the Blender file: nothing may sit in a door's swing or in a walkway.
+// dx/dz shift in metres; fx/fz squeeze the piece into a new [min,max] range; hide drops it.
+const LAYOUT = [
+  // dining: one bench row so there's a real aisle; a gap between the tables lines up with the kitchen and courtyard doors
+  [/^Bench_S\d(_leg)?$/, { hide: true }],
+  [/^(Dining_Table1_|Bench_N1)/, { mapx: [[7.01, 10.97], [8.25, 11.0]] }],
+  [/^Buffet_Counter$/, { fx: [11.25, 12.95], dz: -1.44 }],          // was right inside the dining doors; now against the north wall
+  // reception: the sofa and coffee table filled the doorway
+  [/^Reception_(Coffee_|Sofa)/, { hide: true }],
+  [/^Reception_(Counter|Top)$/, { dz: 0.12 }],                       // a little more room behind the desk
+  // chef's room: armchair sat in the doorway; desk moves to the wall by the wardrobe, chair turns to face it
+  [/^Chef_Armchair$/, { hide: true }],
+  [/^Chef_Desk_/, { dx: -0.09, dz: -1.66 }],
+  [/^Chef_Chair_/, { mapz: [[-12.12, -11.66], [-12.22, -12.68]], dx: -0.25 }],
+  // founder rooms: coffee tables clear the door swing; balcony chairs clear the balcony door
+  [/^F[12]_(Coffee_|Rug2)/, { dx: -0.6 }],
+  [/^Balcony_Chair_[23]$/, { dx: 1.5 }],
+  // activity hall: drop the middle seat of each row to make a centre aisle
+  [/^Act_Chair_\d_1_/, { hide: true }],
+  // café deck: the inner tables become two-seaters by the glass, leaving a walkway down the deck
+  [/^Deck_Chair_[1357]_[01]$/, { hide: true }],
+  [/^(Deck_Table_[1357](_leg)?|Deck_Chair_[1357]_[23])$/, { dx: 0.55 }],
+  // doorways cut into the café / activity glass and the deck rail (doors are added below)
+  [/^Cafe_GlassW$/, { cutz: [-7.58, -6.73] }], [/^Cafe_Mullion5$/, { hide: true }],
+  [/^Cafe_Deck_RailW_r\d$/, { cutz: [-7.58, -6.73] }], [/^Cafe_Deck_RailW_p4$/, { hide: true }],
+  [/^Activity_GlassW$/, { cutz: [-23.05, -22.15] }],
+];
+const EXTRA_DOORS = [ // [name, glass it's cut from, z range, which way is inside]
+  ['Cafe_Deck_Door', 'Cafe_GlassW', [-7.58, -6.73], new THREE.Vector3(1, 0, 0)],
+  ['Activity_Deck_Door', 'Activity_GlassW', [-23.05, -22.15], new THREE.Vector3(1, 0, 0)],
+];
+const cutSrc = {};
+function applyLayout(name, g, mat) {
+  for (const [re, f] of LAYOUT) {
+    if (!re.test(name)) continue;
+    if (f.hide) return false;
+    g.computeBoundingBox(); const b = g.boundingBox;
+    if (f.fx) { const k = (f.fx[1] - f.fx[0]) / (b.max.x - b.min.x); g.translate(-b.min.x, 0, 0); g.scale(k, 1, 1); g.translate(f.fx[0], 0, 0); }
+    if (f.fz) { const k = (f.fz[1] - f.fz[0]) / (b.max.z - b.min.z); g.translate(0, 0, -b.min.z); g.scale(1, 1, k); g.translate(0, 0, f.fz[0]); }
+    if (f.mapx) { const [[a0, a1], [b0, b1]] = f.mapx; const k = (b1 - b0) / (a1 - a0); g.translate(-a0, 0, 0); g.scale(k, 1, 1); g.translate(b0, 0, 0); }
+    if (f.mapz) { const [[a0, a1], [b0, b1]] = f.mapz; const k = (b1 - b0) / (a1 - a0); g.translate(0, 0, -a0); g.scale(1, 1, k); g.translate(0, 0, b0); if (k < 0) flipWinding(g); }
+    if (f.dx || f.dz) g.translate(f.dx || 0, 0, f.dz || 0);
+    if (f.cutz) { // replace a box-shaped piece with the two parts either side of a gap
+      g.computeBoundingBox(); const bb = g.boundingBox.clone(); cutSrc[name] = { box: bb, mat };
+      const parts = []; const mk = (z0, z1) => { if (z1 - z0 < 0.01) return; const s = bb.getSize(new THREE.Vector3()); const p = new THREE.BoxGeometry(s.x, s.y, z1 - z0); p.translate((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (z0 + z1) / 2); parts.push(p); };
+      mk(bb.min.z, f.cutz[0]); mk(f.cutz[1], bb.max.z);
+      const m = mergeGeometries(parts.map(p => { p.deleteAttribute('uv'); return p; })); g.copy(m);
+    }
+    g.boundingBox = null;
+  }
+  return true;
+}
+function flipWinding(g) { const ix = g.index; if (!ix) return; for (let i = 0; i < ix.count; i += 3) { const a = ix.getX(i + 1); ix.setX(i + 1, ix.getX(i + 2)); ix.setX(i + 2, a); } if (g.attributes.normal) { const n = g.attributes.normal; for (let i = 0; i < n.count; i++) n.setZ(i, -n.getZ(i)); } }
+
+// ------------------------------------------------------------ doors: real hinged leaves that open, close and block
+export const doors = [];
+const DOOR_RE = /(_East_Door|_BalconyDoor|_Balcony_Door)$/;
+const SWING_OUT = new Set(['Booths_East_Door']); // the booth room is too tight for an inward swing
+const frameMat = new THREE.MeshStandardMaterial({ color: '#23272b', roughness: 0.5, metalness: 0.4 });
+function buildDoor(name, box, glassMat, grp, insideDir) {
+  const size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+  const alongZ = size.x < size.z; const W = alongZ ? size.z : size.x, H = size.y;
+  const inside = insideDir ? insideDir.clone() : alongZ ? (c.x > 8 ? new THREE.Vector3(-1, 0, 0) : new THREE.Vector3(1, 0, 0)) : new THREE.Vector3(0, 0, c.z > -20 ? -1 : 1);
+  const swingTo = SWING_OUT.has(name) ? inside.clone().negate() : inside;
+  const n = W > 1.4 ? 2 : 1; const lw = W / n; const leaves = [];
+  for (let i = 0; i < n; i++) {
+    // hinge on the outer jamb; leaf extends along local +X from the hinge
+    const fromMin = i === 0; const pivot = new THREE.Group();
+    const hinge = alongZ ? new THREE.Vector3(c.x, box.min.y, fromMin ? box.min.z : box.max.z) : new THREE.Vector3(fromMin ? box.min.x : box.max.x, box.min.y, c.z);
+    pivot.position.copy(hinge);
+    const closedYaw = alongZ ? (fromMin ? -Math.PI / 2 : Math.PI / 2) : (fromMin ? 0 : Math.PI);
+    const dirAt = (yaw) => new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+    const openYaw = closedYaw + (dirAt(closedYaw + Math.PI / 2).dot(swingTo) > 0 ? 1 : -1) * Math.PI * 0.5;
+    pivot.rotation.y = closedYaw;
+    const leaf = new THREE.Group(); pivot.add(leaf);
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(lw - 0.1, H - 0.12, 0.012), glassMat); glass.position.set(lw / 2, H / 2, 0); glass.renderOrder = 2; leaf.add(glass);
+    const bar = (w, h, x, y) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.045), frameMat); m.position.set(x, y, 0); m.castShadow = true; leaf.add(m); return m; };
+    bar(0.05, H, 0.025, H / 2); bar(0.05, H, lw - 0.025, H / 2); bar(lw, 0.06, lw / 2, 0.03); bar(lw, 0.06, lw / 2, H - 0.03); bar(lw, 0.05, lw / 2, H * 0.42);
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.32, 0.12), frameMat); handle.position.set(lw - 0.12, H * 0.45, 0); leaf.add(handle);
+    leaf.traverse(o => { if (o.isMesh) o.userData.door = name; });
+    groups[grp].add(pivot);
+    leaves.push({ pivot, closedYaw, openYaw, w: lw, h: H, inv: new THREE.Matrix4() });
+  }
+  const d = { name, center: c, leaves, t: 0, want: 0, byPlayer: false, holdUntil: 0, grp, width: W, normal: inside, alongZ };
+  doors.push(d); return d;
+}
+export function setDoor(d, open, byPlayer) { d.want = open ? 1 : 0; d.byPlayer = !!(open && byPlayer); }
+export function updateDoors(dt) {
+  for (const d of doors) {
+    if (d.t === d.want) continue;
+    d.t += Math.sign(d.want - d.t) * Math.min(Math.abs(d.want - d.t), dt * 2.2);
+    const e = d.t * d.t * (3 - 2 * d.t);
+    for (const l of d.leaves) { l.pivot.rotation.y = l.closedYaw + (l.openYaw - l.closedYaw) * e; l.pivot.updateMatrixWorld(true); l.inv.copy(l.pivot.matrixWorld).invert(); }
+  }
+}
+// push a capsule (segment + radius) out of every door leaf; returns true if it touched one
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _p = new THREE.Vector3(), _q = new THREE.Vector3();
+export function collideDoors(seg, rad) {
+  let hit = false;
+  for (const d of doors) {
+    if (seg.start.distanceTo(d.center) > d.width + 2.5) continue;
+    for (const l of d.leaves) {
+      if (!l.ready) { l.pivot.updateMatrixWorld(true); l.inv.copy(l.pivot.matrixWorld).invert(); l.ready = true; }
+      for (let i = 0; i <= 6; i++) {
+        _p.lerpVectors(seg.start, seg.end, i / 6); _a.copy(_p).applyMatrix4(l.inv);
+        _b.set(Math.max(0, Math.min(l.w, _a.x)), Math.max(0, Math.min(l.h, _a.y)), Math.max(-0.03, Math.min(0.03, _a.z)));
+        _q.copy(_b).applyMatrix4(l.pivot.matrixWorld); const dist = _p.distanceTo(_q);
+        if (dist < rad) { const push = _p.clone().sub(_q); push.y = 0; if (push.lengthSq() < 1e-8) push.set(d.normal.x, 0, d.normal.z); push.normalize().multiplyScalar(rad - dist); seg.start.add(push); seg.end.add(push); hit = true; }
+      }
+    }
+  }
+  return hit;
+}
+
 export async function loadModel(onProgress) {
   let pm = 0, pa = 0; const prog = () => onProgress(Math.min(1, pm * 0.47 + pa * 0.53));
   const assetsP = loadAssets((f) => { pa = f; prog(); });
@@ -258,7 +377,9 @@ export async function loadModel(onProgress) {
   const bin = atob(text.trim()); const buf = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
   const gltf = await new Promise((res2, rej) => new GLTFLoader().parse(buf.buffer, './', res2, rej));
   await assetsP;
-  const haveAssets = Object.keys(ASSETS).length > 0; const inst = new Map(); const anchors = { table: [], chair: [] }; const held = [];
+  // container seam posts that run through a doorway get cut back (a real builder would cut them too)
+  const doorBoxes = []; gltf.scene.traverse((o) => { if (o.isMesh && DOOR_RE.test(o.name)) doorBoxes.push(new THREE.Box3().setFromObject(o).expandByScalar(0.08)); });
+  const doorSrc = []; const haveAssets = Object.keys(ASSETS).length > 0; const inst = new Map(); const anchors = { table: [], chair: [] }; const held = [];
   const buckets = new Map(); const solid = [];
   gltf.scene.updateMatrixWorld(true);
   gltf.scene.traverse((o) => {
@@ -273,6 +394,9 @@ export async function loadModel(onProgress) {
     }
     const grp = classify(name);
     const g = o.geometry.clone(); g.applyMatrix4(o.matrixWorld);
+    if (!applyLayout(name, g, o.material)) return;
+    if (/_Seam_/.test(name)) { g.computeBoundingBox(); if (doorBoxes.some(b => b.intersectsBox(g.boundingBox))) return; }
+    if (DOOR_RE.test(name)) { g.computeBoundingBox(); prepMaterial(o.material); if (/Glass/.test(o.material.name)) glassMats.push(o.material); doorSrc.push([name, g.boundingBox.clone(), o.material, grp]); return; }
     if (/(Table|Desk_\d|Desk_top|WorkCounter_top|Counter)/.test(name)) { g.computeBoundingBox(); anchors.table.push(g.boundingBox.getCenter(new THREE.Vector3())); }
     if (/(CoChair_\d+_\d+_seat|Booth_\d_Chair_seat|Chef_Chair_seat|WorkChair|DeskChair)/.test(name)) { g.computeBoundingBox(); anchors.chair.push(g.boundingBox.getCenter(new THREE.Vector3())); }
     const pr = haveAssets ? propOf(name) : null;
@@ -284,13 +408,15 @@ export async function loadModel(onProgress) {
     if (pr) { g.computeBoundingBox(); let it = inst.get(pr.key); if (!it) inst.set(pr.key, it = { rule: pr.rule, grp, box: new THREE.Box3(), back: null, parts: [] }); it.box.union(g.boundingBox); it.parts.push({ key, grp, mat, g });
       if (/(back|Back|door)$/.test(name)) { it.back = (it.back || new THREE.Box3()).union(g.boundingBox); } }
     else { if (!buckets.has(key)) buckets.set(key, { grp, mat, geos: [] }); buckets.get(key).geos.push(g); }
-    const see = /Glass|Polycarbonate|Label/.test(mat.name) || /^(Tree_|WG\d_Bamboo|WG\d_Flower|Veg_|Umbrella)/.test(name);
-    if (!see) { const c = new THREE.BufferGeometry(); c.setAttribute('position', g.attributes.position); c.setIndex(g.index); solid.push(c); }
+    const see = /Polycarbonate|Label/.test(mat.name) || /^(Tree_|WG\d_Bamboo|WG\d_Flower|Veg_|Umbrella)/.test(name);
+    if (!see) { const c = new THREE.BufferGeometry(); c.setAttribute('position', g.attributes.position); c.setIndex(g.index); solid.push(c); if (!g.boundingBox) g.computeBoundingBox(); solidInfo.push([name, g.boundingBox.clone()]); }
   });
   if (inst.size) { // swap placeholders for the CC0 models; anything that couldn't be placed keeps its Blender shape
     const placed = placeProps(inst, anchors); for (const [k, it] of inst) propBoxes[k] = it.box;
     for (const [k, it] of inst) if (!placed.has(k)) for (const p of it.parts) { if (!buckets.has(p.key)) buckets.set(p.key, { grp: p.grp, mat: p.mat, geos: [] }); buckets.get(p.key).geos.push(p.g); }
   }
+  for (const [n, b, m, grp] of doorSrc) buildDoor(n, b, m, grp);
+  for (const [n, src, [z0, z1], ins] of EXTRA_DOORS) { const c = cutSrc[src]; if (!c) continue; const b = c.box.clone(); b.min.z = z0; b.max.z = z1; buildDoor(n, b, c.mat, classify(src), ins); }
   const seen = new Set();
   for (const b of buckets.values()) {
     if (!seen.has(b.mat)) { prepMaterial(b.mat); if (/Glass/.test(b.mat.name)) glassMats.push(b.mat); seen.add(b.mat); }
@@ -303,7 +429,7 @@ export async function loadModel(onProgress) {
   const ramp = (x0, x1, y0, y1, zA, zB) => { const v = [P(x0, y0, zA), P(x1, y0, zB), P(x1, y1, zB), P(x0, y1, zA)]; const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(v.flatMap(q => q.toArray()), 3)); g.setIndex([0, 1, 2, 0, 2, 3]); return g; };
   solid.push(ramp(46, 49.2, 36, 106, 1.9, 0.12), ramp(63.8, 66, 56, 96, 0.12, 1.25), ramp(56.5, 59, 1.5, 4, 0.1, 0.62));
   const cg = mergeGeometries(solid, false); cg.boundsTree = new MeshBVH(cg);
-  collider = new THREE.Mesh(cg); collider.visible = false;
+  collider = new THREE.Mesh(cg); collider.visible = false; collider.raycast = acceleratedRaycast;
 }
 
 // ------------------------------------------------------------ sky + time of day

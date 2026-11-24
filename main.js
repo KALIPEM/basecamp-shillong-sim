@@ -3,6 +3,8 @@ import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import * as E from './econ.js';
 import { smallTalk, TRAITS, STAGES } from './people.js';
 import * as W from './render.js';
+import { buildNav, loadNavData, serializeNav, navKey } from './nav.js';
+let NAV = null; // walkable-ground grid, built once the model is in
 const { renderer, labelRenderer, scene, camera, controls, P, toFt, groups, pickables } = W;
 
 const $ = (id) => document.getElementById(id);
@@ -63,7 +65,29 @@ const DEST = {
   f1: ['f1', [16, 44, 13, 19, 11.35]], f2: ['f2', [16, 44, 21, 27, 11.35]], frontdesk: ['rec', [31, 36, 41.5, 42.8, 1.85]],
 };
 const DORM_NODE = { A: 'dA', B: 'dB', C: 'dC', D: 'dD', E: 'dE' }, DORM_YB = { A: 74, B: 90, C: 106, D: 44, E: 28 }, WB_NODE = { A: 'wbA', B: 'wbB', C: 'wbC', D: 'wbD', E: 'wbE' };
-const inBox = (b) => P(b[0] + rnd() * (b[1] - b[0]), b[2] + rnd() * (b[3] - b[2]), b[4]);
+const inBoxRaw = (b) => P(b[0] + rnd() * (b[1] - b[0]), b[2] + rnd() * (b[3] - b[2]), b[4]);
+const _cp = new THREE.Vector3(), _down = new THREE.Vector3(0, -1, 0), _hit = {}, _ray = new THREE.Raycaster(); _ray.firstHitOnly = true;
+function standable(p) { // nothing within 0.23 m of a person's body at this spot
+  const bvh = W.collider && W.collider.geometry.boundsTree; if (!bvh) return true;
+  let y = p.y; _ray.set(_cp.set(p.x, p.y + 0.9, p.z), _down); _ray.far = 1.6; const fl = _ray.intersectObject(W.collider, false)[0]; if (fl && fl.point.y < p.y + 0.5) y = fl.point.y; // stand on whatever floor is there
+  for (const h of [0.4, 0.95, 1.55]) { _cp.set(p.x, y + h, p.z); const r = bvh.closestPointToPoint(_cp, _hit, 0, 0.23); if (r && r.distance < 0.23) return false; }
+  return true;
+}
+function clearWalk(a, b) { // a straight walk from a to b doesn't go through walls or furniture (door leaves don't count, they open)
+  if (!W.collider) return true;
+  const d = b.clone().sub(a); const len = Math.hypot(d.x, d.z); if (len < 0.05) return true; d.y = 0; d.normalize();
+  for (const h of [0.4, 1.2]) for (const side of [-0.22, 0, 0.22]) {
+    const o = new THREE.Vector3(a.x - d.z * side, Math.max(a.y, b.y) + h, a.z + d.x * side);
+    _ray.set(o, d); _ray.far = len; const hit = _ray.intersectObject(W.collider, false)[0]; if (hit) return false;
+  }
+  return true;
+}
+function pickSpot(from, sample, tries = 16) { for (let i = 0; i < tries; i++) { const p = sample(); if (standable(p) && (!from || clearWalk(from, p))) return p; } return null; }
+const inBox = (b, from) => navSpot(b, from) || pickSpot(from, () => inBoxRaw(b)) || (from ? from.clone() : inBoxRaw(b));
+function navSpot(b, from) { // b in feet: [x0, x1, y0, y1, floor z]
+  if (!NAV) return null; const FT = W.FT; const k0 = from ? NAV.nearest(from, 2.5) : -1;
+  const k = NAV.randomIn([b[0] * FT, b[1] * FT, -b[3] * FT, -b[2] * FT], b[4] * FT, k0, rnd); return k >= 0 ? NAV.pos(k) : null;
+}
 function bedPoint(bed) { const d = E.dormOfBed(bed), yb = DORM_YB[d]; const bunk = Math.floor((bed % 6) / 2); return P([10.8, 19.3, 27.8][bunk] + (bed % 2 ? 1.2 : -1.2), yb + 11.3, 11.35); }
 
 // ============================================================ NPCs
@@ -88,11 +112,15 @@ class Agent {
   goto(destName, opts = {}) {
     let node, point;
     if (destName === 'bed') { node = DORM_NODE[E.dormOfBed(this.info.bed)]; point = bedPoint(this.info.bed); }
-    else if (destName === 'dorm') { const d = this.info.dorm; node = DORM_NODE[d]; point = P(8 + rnd() * 24, DORM_YB[d] + 1 + rnd() * 9, 11.35); }
-    else if (destName === 'westbalc') { const d = this.info.bed != null ? E.dormOfBed(this.info.bed) : 'A'; node = WB_NODE[d]; point = P(3 + rnd() * 2, DORM_YB[d] + 2 + rnd() * 12, 11); }
+    else if (destName === 'dorm') { const d = this.info.dorm; node = DORM_NODE[d]; point = navSpot([8, 32, DORM_YB[d] + 1, DORM_YB[d] + 10, 11.35], NV[node]) || pickSpot(NV[node], () => P(8 + rnd() * 24, DORM_YB[d] + 1 + rnd() * 9, 11.35)) || NV[node].clone(); }
+    else if (destName === 'westbalc') { const d = this.info.bed != null ? E.dormOfBed(this.info.bed) : 'A'; node = WB_NODE[d]; point = navSpot([0.5, 5.5, DORM_YB[d] + 2, DORM_YB[d] + 14, 11], NV[node]) || pickSpot(NV[node], () => P(3 + rnd() * 2, DORM_YB[d] + 2 + rnd() * 12, 11)) || NV[node].clone(); }
     else if (destName === 'out') { node = 'gate'; point = NV.gate.clone(); this.goingOut = true; }
-    else { const D = DEST[destName] || DEST.courtyard; node = D[0]; point = inBox(D[1]); }
+    else { const D = DEST[destName] || DEST.courtyard; node = D[0]; point = inBox(D[1], NV[node]); }
     if (this.away) { this.away = false; this.obj.visible = true; this.obj.position.copy(NV.gate); this.node = 'gate'; this.path = []; this.pathNames = []; }
+    if (NAV) { // real walkways: A* over the walkable grid, so nobody cuts through walls, glass or furniture
+      const pts = NAV.route(this.obj.position, point);
+      if (pts) { if (!pts.length) pts.push(point.clone()); this.path = pts; this.pathNames = pts.map(() => null); this.node = node; this.dest = destName; this.after = opts.after || null; this.onArrive = opts.onArrive || null; return; }
+    }
     // if already walking, carry on to the next waypoint first so nobody cuts through walls or air
     const start = (this.path.length && this.pathNames && this.pathNames[0]) ? this.pathNames[0] : this.node;
     const nodes = route(start, node);
@@ -110,7 +138,7 @@ class Agent {
         else { d.multiplyScalar(v / dist); p.add(d); const yaw = Math.atan2(d.x, d.z); this.obj.rotation.y += (((yaw - this.obj.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * Math.min(1, dt * 10); moving = true; this.phase += v * 5.5; }
       } else {
         this.idleT -= dt * speed;
-        if (this.idleT < 0 && this.dest && !['bed', 'out'].includes(this.dest) && DEST[this.dest]) { this.idleT = 8 + rnd() * 12; this.path = [inBox(DEST[this.dest][1])]; this.pathNames = [null]; }
+        if (this.idleT < 0 && this.dest && !['bed', 'out'].includes(this.dest) && DEST[this.dest]) { this.idleT = 8 + rnd() * 12; const tgt = inBox(DEST[this.dest][1], this.obj.position); const pts = NAV && NAV.route(this.obj.position, tgt); this.path = pts && pts.length ? pts : [tgt]; this.pathNames = this.path.map(() => null); }
       }
     }
     W.animatePerson(this.p, moving, this.phase, dt);
@@ -262,6 +290,7 @@ function collide(dt) {
     intersectsBounds: (box) => box.intersectsBox(tBox),
     intersectsTriangle: (tri) => { const tp = tV, cp = tV2; const d = tri.closestPointToSegment(tSeg, tp, cp); if (d < RAD) { const depth = RAD - d; const dir = cp.sub(tp).normalize(); tSeg.start.addScaledVector(dir, depth); tSeg.end.addScaledVector(dir, depth); } },
   });
+  W.collideDoors(tSeg, RAD);
   const delta = tV.subVectors(tSeg.start, me.pos);
   me.onGround = delta.y > Math.abs(dt * me.vel.y * 0.25);
   const off = Math.max(0, delta.length() - 1e-5); delta.normalize().multiplyScalar(off); me.pos.add(delta);
@@ -299,15 +328,31 @@ function stepMe(dt) {
     if (d < bd && Math.abs(a.obj.position.y - feet.y) < 1.2) { bd = d; best = a; }
   }
   nearAgent = best;
+  nearDoor = null; let dd = 1.9;
+  for (const d of W.doors) { const dx = d.center.x - feet.x, dz = d.center.z - feet.z; const h = Math.hypot(dx, dz); if (h < dd && Math.abs(d.center.y - 1.2 - feet.y) < 1.4) { dd = h; nearDoor = d; } }
   const pr = $('prompt');
-  if (best && !dlgOpen) { pr.innerHTML = `<kbd>E</kbd>Talk to ${best.info.short || best.info.name}${best.hasConcern ? ' <b style="color:#f2b81c">(wants to talk)</b>' : ''}`; pr.classList.remove('hidden'); $('talkBtn').textContent = 'Talk'; }
+  if (best && !dlgOpen && !(nearDoor && dd < bd - 0.6)) { nearDoor = null; pr.innerHTML = `<kbd>E</kbd>Talk to ${best.info.short || best.info.name}${best.hasConcern ? ' <b style="color:#f2b81c">(wants to talk)</b>' : ''}`; pr.classList.remove('hidden'); $('talkBtn').textContent = 'Talk'; }
+  else if (nearDoor && !dlgOpen) { nearAgent = null; const open = nearDoor.want > 0; pr.innerHTML = `<kbd>E</kbd>${open ? 'Close' : 'Open'} the door`; pr.classList.remove('hidden'); $('talkBtn').textContent = open ? 'Close' : 'Open'; }
   else pr.classList.add('hidden');
 }
-let nearAgent = null;
+let nearAgent = null, nearDoor = null;
+function useDoor(d) { W.setDoor(d, d.want === 0, true); }
+// NPCs open doors as they reach them and let them swing shut behind; doors you opened stay open until you close them
+function tendDoors(dt) {
+  const now = performance.now();
+  for (const d of W.doors) {
+    let near = false;
+    for (const a of agents.values()) { if (a.away) continue; const p = a.obj.position; if (Math.hypot(p.x - d.center.x, p.z - d.center.z) < 1.7 + Math.min(2.5, speed * 0.15) && Math.abs(p.y + 1.2 - d.center.y) < 1.6) { near = true; break; } }
+    if (walking && me.person) { const p = me.person.group.position; if (Math.hypot(p.x - d.center.x, p.z - d.center.z) < 1.0 && Math.abs(p.y + 1.2 - d.center.y) < 1.6) near = near || d.want > 0; }
+    if (near) { if (d.want === 0) W.setDoor(d, true, false); d.holdUntil = now + 1600; }
+    else if (d.want > 0 && !d.byPlayer && now > d.holdUntil) W.setDoor(d, false, false);
+  }
+  W.updateDoors(dt * Math.max(1, Math.sqrt(speed || 1)));
+}
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
   keys[e.code] = true;
-  if (walking && e.code === 'KeyE' && nearAgent && !dlgOpen) openDialogue(nearAgent, true);
+  if (walking && e.code === 'KeyE' && !dlgOpen) { if (nearAgent) openDialogue(nearAgent, true); else if (nearDoor) useDoor(nearDoor); }
   if (e.code === 'Escape') { if (dlgOpen) closeDialogue(); else if (walking) stopWalking(); }
   if (e.code === 'Space' && !walking) { setSpeed(speed ? 0 : 1); e.preventDefault(); }
   if (walking && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
@@ -321,7 +366,7 @@ addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
   el.addEventListener('pointermove', move);
   const end = (e) => { if (e.pointerId !== id) return; id = null; joy = { x: 0, y: 0 }; knob.style.transform = ''; };
   el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
-  $('talkBtn').onclick = () => { if (nearAgent && !dlgOpen) openDialogue(nearAgent, true); };
+  $('talkBtn').onclick = () => { if (dlgOpen) return; if (nearAgent) openDialogue(nearAgent, true); else if (nearDoor) useDoor(nearDoor); };
 }
 
 // ============================================================ conversations
@@ -433,12 +478,14 @@ function loop() {
   if (st) {
     tick(gdt);
     if (walking) stepMe(dt);
+    tendDoors(dt);
     const upperHidden = !groups.upper.visible;
     for (const a of agents.values()) { a.update(dt, dlgOpen ? 0 : speed); a.obj.visible = !a.away && !(upperHidden && a.obj.position.y > 3) && !(!groups.roof.visible && a.obj.position.y > 6.2 && walking); a.bangObj.visible = a.obj.visible && a.hasConcern; a.tagObj.visible = a.obj.visible && a.showTag && walking; }
     W.updateSky(st.minute, st.flags, st.upgrades.battery != null); updateHud();
     if (W.rain.visible) W.updateRain(dt);
     saveT += dt; if (saveT > 20) { saveT = 0; save(); }
   }
+  if (!st) W.updateDoors(dt);
   controls.update();
   renderer.render(scene, camera); labelRenderer.render(scene, camera);
 }
@@ -553,7 +600,7 @@ const TABS = {
   },
   help() {
     return `<h3>How to play</h3>
-    <p class="muted"><b>Walk as you:</b> press the orange button to step into Basecamp. WASD or arrows to walk, Shift to run, drag to turn the camera, <b>E</b> to talk. On a phone, use the joystick and the Talk button. People with a yellow <b>!</b> need something from you. Handling it in person earns more trust than doing it from the Inbox.</p>
+    <p class="muted"><b>Walk as you:</b> press the orange button to step into Basecamp. WASD or arrows to walk, Shift to run, drag to turn the camera, <b>E</b> to talk or open and close the door in front of you (you can also click a door). Doors are solid when shut; staff and guests open them as they walk through. On a phone, use the joystick and the Talk button. People with a yellow <b>!</b> need something from you. Handling it in person earns more trust than doing it from the Inbox.</p>
     <p class="muted"><b>People matter:</b> every guest has a mood and a relationship with you, and that shapes the review they leave. Staff have morale: unhappy staff work slower and can quit.</p>
     <p class="muted"><b>Money:</b> beds and monthly stays, the café menu, desk passes, rentals, tours, laundry (guests, locals and contracts), server hosting, events and room hire. Costs are itemised: kitchen and café ingredients, LPG, salaries, power and Wi-Fi, linen, booking commissions, GST, upkeep and licences.</p>
     <p class="muted"><b>Seasons:</b> busy in spring and Oct–Nov, quiet and stormy in the monsoon. Winters are cold, so blankets and hot water matter.</p>
@@ -619,6 +666,8 @@ renderer.domElement.addEventListener('pointerup', e => {
   mouse.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(mouse, camera);
   const ah = ray.intersectObjects([...agents.values()].filter(a => a.obj.visible).map(a => a.obj), true);
   if (ah.length) { const a = ah[0].object.userData.agent; if (!a) return; if (walking) { if (a.obj.position.distanceTo(me.person.group.position) < 3) openDialogue(a, true); else toast(`Walk closer to talk to ${a.info.short || a.info.name}.`); } else showAgentCard(a); return; }
+  const dh = ray.intersectObjects(W.doors.flatMap(d => d.leaves.map(l => l.pivot)).filter(o => o.parent.visible), true)[0];
+  if (dh && dh.object.userData.door) { const d = W.doors.find(x => x.name === dh.object.userData.door); if (d && (!walking || d.center.distanceTo(me.person.group.position) < 4)) { useDoor(d); return; } }
   if (walking) return;
   const hit = ray.intersectObjects(pickables.filter(m => m.parent.visible && !m.material.transparent), false)[0]; if (!hit) return hideCard();
   const z = zoneAt(toFt(hit.point)); if (z) showZone(z[0], z[1]); else hideCard();
@@ -691,7 +740,13 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) save(
 
 camera.position.copy(VIEWS.overview[0]); controls.target.copy(VIEWS.overview[1]);
 renderer.setAnimationLoop(loop);
-W.loadModel((f) => { $('loadFill').style.width = Math.round(f * 100) + '%'; }).then(() => {
+W.loadModel((f) => { $('loadFill').style.width = Math.round(f * 92) + '%'; }).then(async () => {
+  $('loadTxt').textContent = 'Mapping the walkways…';
+  try {
+    const key = navKey(W.collider);
+    try { const r = await fetch('./nav.b64.txt'); if (r.ok) NAV = loadNavData(await r.text(), key); } catch (e) { }
+    if (!NAV) NAV = await buildNav(W.collider, [-3, 26, -41, 3], (f) => { $('loadFill').style.width = Math.round(92 + f * 8) + '%'; }); // layout changed: map it fresh
+  } catch (e) { console.warn('nav grid failed, using the simple path graph', e); }
   $('loading').remove();
   const saved = loadSave();
   if (saved && saved.v === E.VERSION && !saved.over) { $('continue').classList.remove('hidden'); $('continue').onclick = () => startGame(saved); $('pname').value = saved.playerName || ''; }
