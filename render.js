@@ -263,13 +263,28 @@ const LAYOUT = [
   // reception: the sofa and coffee table filled the doorway
   [/^Reception_(Coffee_|Sofa)/, { hide: true }],
   [/^Reception_(Counter|Top)$/, { dz: 0.12 }],                       // a little more room behind the desk
-  // chef's room: armchair sat in the doorway; desk moves to the wall by the wardrobe, chair turns to face it
-  [/^Chef_Armchair$/, { hide: true }],
-  [/^Chef_Desk_/, { dx: -0.09, dz: -1.66 }],
-  [/^Chef_Chair_/, { mapz: [[-12.12, -11.66], [-12.22, -12.68]], dx: -0.25 }],
-  // founder rooms: coffee tables clear the door swing; balcony chairs clear the balcony door
+  // chef's room: bed head sat across the bathroom doorway. Bed slides east, the armchair/desk that crowded
+  // the room go, and the toilet moves out of the bathroom doorway into the corner by the shower.
+  [/^Chef_(Armchair|Desk_|Chair_|Nightstand|Duvet)/, { hide: true }],
+  [/^Chef_(Bed_|Headboard)/, { dx: 0.95 }],
+  [/^Chef_Toilet$/, { dz: 1.83 }],
+  // founder rooms: same problem. Bed slides east (1 m clear in front of the bathroom), wardrobe moves along
+  // beside the desk, toilet moves beside the vanity, coffee table clears the entrance door swing.
+  [/^F[12]_(Duvet|Nightstand)$/, { hide: true }],
+  [/^F[12]_(Bed_|Headboard)/, { dx: 0.95 }],
+  [/^F[12]_Wardrobe$/, { dx: 2.65 }],
+  [/^F[12]_Toilet$/, { dx: -0.75 }],
   [/^F[12]_(Coffee_|Rug2)/, { dx: -0.6 }],
+  // front balcony: chairs sat mid-walkway; now against the rail, clear of the balcony doors
   [/^Balcony_Chair_[23]$/, { dx: 1.5 }],
+  [/^Balcony_Chair_\d$/, { dz: 0.28 }],
+  // west balconies run the length of the building: each dorm's table + 2 chairs go against the rail as one group
+  [/^Dorm[A-E]_WBal_Table$/, { dx: -0.34 }],
+  [/^Dorm[A-E]_WBal_Chair1$/, { dx: -0.27 }],
+  [/^Dorm[A-E]_WBal_Chair0$/, { dx: -0.27, dz: -1.9 }],
+  // laundry: washers shuffle along so the storeroom doorway is clear
+  [/^Washer_\d/, { dx: 0.75 }],
+  [/^Store_Shelf_N$/, { fx: [1.92, 6.9] }],                          // and the storeroom shelf stops short of its doorway
   // activity hall: drop the middle seat of each row to make a centre aisle
   [/^Act_Chair_\d_1_/, { hide: true }],
   // café deck: the inner tables become two-seaters by the glass, leaving a walkway down the deck
@@ -279,6 +294,8 @@ const LAYOUT = [
   [/^Cafe_GlassW$/, { cutz: [-7.58, -6.73] }], [/^Cafe_Mullion5$/, { hide: true }],
   [/^Cafe_Deck_RailW_r\d$/, { cutz: [-7.58, -6.73] }], [/^Cafe_Deck_RailW_p4$/, { hide: true }],
   [/^Activity_GlassW$/, { cutz: [-23.05, -22.15] }],
+  // new spiral stair at the front-west corner: open the corner balcony's front rail where it arrives
+  [/^WBalcony_Rail_Corner_Front_r\d$/, { cutx: [0.66, 1.78] }],
 ];
 const EXTRA_DOORS = [ // [name, glass it's cut from, z range, which way is inside]
   ['Cafe_Deck_Door', 'Cafe_GlassW', [-7.58, -6.73], new THREE.Vector3(1, 0, 0)],
@@ -295,6 +312,9 @@ function applyLayout(name, g, mat) {
     if (f.mapx) { const [[a0, a1], [b0, b1]] = f.mapx; const k = (b1 - b0) / (a1 - a0); g.translate(-a0, 0, 0); g.scale(k, 1, 1); g.translate(b0, 0, 0); }
     if (f.mapz) { const [[a0, a1], [b0, b1]] = f.mapz; const k = (b1 - b0) / (a1 - a0); g.translate(0, 0, -a0); g.scale(1, 1, k); g.translate(0, 0, b0); if (k < 0) flipWinding(g); }
     if (f.dx || f.dz) g.translate(f.dx || 0, 0, f.dz || 0);
+    if (f.cutx) { g.computeBoundingBox(); const bb = g.boundingBox.clone(); const parts = []; const sz = bb.getSize(new THREE.Vector3());
+      const mk = (x0, x1) => { if (x1 - x0 < 0.01) return; const p = new THREE.BoxGeometry(x1 - x0, sz.y, sz.z); p.deleteAttribute('uv'); p.translate((x0 + x1) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2); parts.push(p); };
+      mk(bb.min.x, f.cutx[0]); mk(f.cutx[1], bb.max.x); if (!parts.length) return false; g.copy(mergeGeometries(parts)); }
     if (f.cutz) { // replace a box-shaped piece with the two parts either side of a gap
       g.computeBoundingBox(); const bb = g.boundingBox.clone(); cutSrc[name] = { box: bb, mat };
       const parts = []; const mk = (z0, z1) => { if (z1 - z0 < 0.01) return; const s = bb.getSize(new THREE.Vector3()); const p = new THREE.BoxGeometry(s.x, s.y, z1 - z0); p.translate((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (z0 + z1) / 2); parts.push(p); };
@@ -306,6 +326,44 @@ function applyLayout(name, g, mat) {
   return true;
 }
 function flipWinding(g) { const ix = g.index; if (!ix) return; for (let i = 0; i < ix.count; i += 3) { const a = ix.getX(i + 1); ix.setX(i + 1, ix.getX(i + 2)); ix.setX(i + 2, a); } if (g.attributes.normal) { const n = g.attributes.normal; for (let i = 0; i < n.count; i++) n.setZ(i, -n.getZ(i)); } }
+
+// ------------------------------------------------------------ spiral stair: forecourt -> front-west balcony corner
+// 18 steps, one full turn, 2.4 m across. You go in at the west side heading north, climb anticlockwise
+// (seen from above) and step off the top onto a landing that opens onto the corner balcony.
+export const SPIRAL = { cx: 1.2, cz: -1.18, r0: 0.09, r1: 1.2, y0: 0.04, y1: 3.35, n: 18 };
+function wedge(r0, r1, a0, a1, yTop, th) {
+  const sh = new THREE.Shape(); const N = Math.max(3, Math.ceil((a1 - a0) / 0.09));
+  for (let i = 0; i <= N; i++) { const a = a0 + (a1 - a0) * i / N; i ? sh.lineTo(r1 * Math.cos(a), -r1 * Math.sin(a)) : sh.moveTo(r1 * Math.cos(a), -r1 * Math.sin(a)); }
+  for (let i = N; i >= 0; i--) { const a = a0 + (a1 - a0) * i / N; sh.lineTo(r0 * Math.cos(a), -r0 * Math.sin(a)); }
+  const g = new THREE.ExtrudeGeometry(sh, { depth: th, bevelEnabled: false }); g.rotateX(-Math.PI / 2); g.translate(0, yTop - th, 0); g.deleteAttribute('uv'); return g;
+}
+function buildSpiral(stairMat, railMat) {
+  const { cx, cz, r0, r1, y0, y1, n } = SPIRAL; const step = THREE.MathUtils.degToRad(20), rise = (y1 - y0) / n;
+  const treads = [], rails = [], solids = [];
+  const topA = Math.PI; // top step on the west side; the landing wraps round to the north, onto the balcony
+  for (let k = 0; k < n; k++) {
+    const a = topA - (n - 1 - k) * step, yT = y0 + (k + 1) * rise;
+    const t = wedge(r0, r1, a - step / 2 - 0.02, a + step / 2 + 0.02, yT, 0.05); treads.push(t); solids.push(t);
+    const post = new THREE.CylinderGeometry(0.018, 0.018, 0.95, 6); post.translate((r1 - 0.04) * Math.cos(a), yT + 0.475, (r1 - 0.04) * Math.sin(a)); rails.push(post); solids.push(post);
+  }
+  // top landing: a quarter-and-a-bit from the last step round to the balcony edge
+  const land = wedge(r0, r1, topA + step / 2, topA + THREE.MathUtils.degToRad(125), y1, 0.06); treads.push(land); solids.push(land);
+  for (const rr of [0.3, 0.62, 0.94]) { const a = topA + THREE.MathUtils.degToRad(124); const post = new THREE.CylinderGeometry(0.018, 0.018, 0.95, 6); post.translate(rr * Math.cos(a), y1 + 0.475, rr * Math.sin(a)); rails.push(post); solids.push(post); }
+  for (let a = topA + step; a < topA + THREE.MathUtils.degToRad(55); a += step) { const post = new THREE.CylinderGeometry(0.018, 0.018, 0.95, 6); post.translate((r1 - 0.04) * Math.cos(a), y1 + 0.475, (r1 - 0.04) * Math.sin(a)); rails.push(post); solids.push(post); }
+  // helical handrail + landing rail
+  const pts = []; const aStart = topA - (n - 1) * step - step / 2;
+  for (let i = 0; i <= 120; i++) { const t = i / 120; const a = aStart + t * ((n) * step + THREE.MathUtils.degToRad(45)); const yy = Math.min(y1, y0 + rise * 0.5 + (a - aStart) / step * rise) + 0.95; pts.push(new THREE.Vector3((r1 - 0.04) * Math.cos(a), yy, (r1 - 0.04) * Math.sin(a))); }
+  const hr = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 200, 0.025, 6, false); hr.deleteAttribute('uv'); rails.push(hr); solids.push(hr);
+  const col = new THREE.CylinderGeometry(r0, r0, y1 + 1.0, 12); col.translate(0, (y1 + 1.0) / 2, 0); col.deleteAttribute('uv'); rails.push(col); solids.push(col);
+  // a short bridge plate between the landing and the balcony deck
+  const br = new THREE.BoxGeometry(1.1, 0.06, 0.14); br.translate(0, y1 - 0.03, -r1 - 0.02); br.deleteAttribute('uv'); treads.push(br); solids.push(br);
+  const strip = (g) => { g = g.index ? g.toNonIndexed() : g; for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal') g.deleteAttribute(k); return g; };
+  const tg = mergeGeometries(treads.map(strip)), rg = mergeGeometries(rails.map(strip));
+  tg.translate(cx, 0, cz); rg.translate(cx, 0, cz);
+  const tm = new THREE.Mesh(tg, stairMat || new THREE.MeshStandardMaterial({ color: '#3a3f44', roughness: 0.6, metalness: 0.4 }));
+  const rm = new THREE.Mesh(rg, railMat || frameMat); for (const m of [tm, rm]) { m.castShadow = true; m.receiveShadow = true; groups.base.add(m); }
+  return solids.map(g => { const c = g.clone(); c.translate(cx, 0, cz); if (!c.index) { const ix = []; for (let i = 0; i < c.attributes.position.count; i++) ix.push(i); c.setIndex(ix); } const o = new THREE.BufferGeometry(); o.setAttribute('position', c.attributes.position); o.setIndex(c.index); return o; });
+}
 
 // ------------------------------------------------------------ doors: real hinged leaves that open, close and block
 export const doors = [];
@@ -379,7 +437,7 @@ export async function loadModel(onProgress) {
   await assetsP;
   // container seam posts that run through a doorway get cut back (a real builder would cut them too)
   const doorBoxes = []; gltf.scene.traverse((o) => { if (o.isMesh && DOOR_RE.test(o.name)) doorBoxes.push(new THREE.Box3().setFromObject(o).expandByScalar(0.08)); });
-  const doorSrc = []; const haveAssets = Object.keys(ASSETS).length > 0; const inst = new Map(); const anchors = { table: [], chair: [] }; const held = [];
+  let stairMat = null, railMat = null; const doorSrc = []; const haveAssets = Object.keys(ASSETS).length > 0; const inst = new Map(); const anchors = { table: [], chair: [] }; const held = [];
   const buckets = new Map(); const solid = [];
   gltf.scene.updateMatrixWorld(true);
   gltf.scene.traverse((o) => {
@@ -394,6 +452,7 @@ export async function loadModel(onProgress) {
     }
     const grp = classify(name);
     const g = o.geometry.clone(); g.applyMatrix4(o.matrixWorld);
+    if (name === 'Ext_Stair_1_t0') stairMat = o.material; if (name === 'Rail_Ext1_W_p0') railMat = o.material;
     if (!applyLayout(name, g, o.material)) return;
     if (/_Seam_/.test(name)) { g.computeBoundingBox(); if (doorBoxes.some(b => b.intersectsBox(g.boundingBox))) return; }
     if (DOOR_RE.test(name)) { g.computeBoundingBox(); prepMaterial(o.material); if (/Glass/.test(o.material.name)) glassMats.push(o.material); doorSrc.push([name, g.boundingBox.clone(), o.material, grp]); return; }
@@ -428,6 +487,7 @@ export async function loadModel(onProgress) {
   // invisible ramps so you can step up from the paths onto the plinth-height floors
   const ramp = (x0, x1, y0, y1, zA, zB) => { const v = [P(x0, y0, zA), P(x1, y0, zB), P(x1, y1, zB), P(x0, y1, zA)]; const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(v.flatMap(q => q.toArray()), 3)); g.setIndex([0, 1, 2, 0, 2, 3]); return g; };
   solid.push(ramp(46, 49.2, 36, 106, 1.9, 0.12), ramp(63.8, 66, 56, 96, 0.12, 1.25), ramp(56.5, 59, 1.5, 4, 0.1, 0.62));
+  for (const g of buildSpiral(stairMat, railMat)) { solid.push(g); g.computeBoundingBox(); solidInfo.push(['Spiral_Stair', g.boundingBox.clone()]); }
   const cg = mergeGeometries(solid, false); cg.boundsTree = new MeshBVH(cg);
   collider = new THREE.Mesh(cg); collider.visible = false; collider.raycast = acceleratedRaycast;
 }

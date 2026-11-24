@@ -134,6 +134,10 @@ class Agent {
       if (this.path.length) {
         const tgt = this.path[0]; const p = this.obj.position; const d = tgt.clone().sub(p); const dist = d.length();
         const v = Math.min(7, 1.4 * Math.max(1, Math.sqrt(speed) * 1.3)) * dt;
+        // someone right in front? wait for them (in a tight spot only one of a facing pair waits), then carry on
+        const blk = blockedBy(this, d, dist);
+        if (blk && (this._wait = (this._wait || 0) + dt * Math.max(1, speed)) < 3) { W.animatePerson(this.p, false, this.phase, dt); return; }
+        if (!blk) this._wait = 0;
         if (dist <= v) { p.copy(tgt); this.path.shift(); if (this.pathNames) this.pathNames.shift(); if (!this.path.length) this.arrived(); }
         else { d.multiplyScalar(v / dist); p.add(d); const yaw = Math.atan2(d.x, d.z); this.obj.rotation.y += (((yaw - this.obj.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * Math.min(1, dt * 10); moving = true; this.phase += v * 5.5; }
       } else {
@@ -291,6 +295,9 @@ function collide(dt) {
     intersectsTriangle: (tri) => { const tp = tV, cp = tV2; const d = tri.closestPointToSegment(tSeg, tp, cp); if (d < RAD) { const depth = RAD - d; const dir = cp.sub(tp).normalize(); tSeg.start.addScaledVector(dir, depth); tSeg.end.addScaledVector(dir, depth); } },
   });
   W.collideDoors(tSeg, RAD);
+  for (const a of agents.values()) { if (a.away) continue; const p = a.obj.position; const dy = tSeg.start.y - p.y; if (dy < -0.3 || dy > 2) continue;
+    const dx = tSeg.start.x - p.x, dz = tSeg.start.z - p.z; const d = Math.hypot(dx, dz); const min = RAD + BODY;
+    if (d < min && d > 1e-4) { const k = (min - d) / d; tSeg.start.x += dx * k; tSeg.start.z += dz * k; tSeg.end.x += dx * k; tSeg.end.z += dz * k; } }
   const delta = tV.subVectors(tSeg.start, me.pos);
   me.onGround = delta.y > Math.abs(dt * me.vel.y * 0.25);
   const off = Math.max(0, delta.length() - 1e-5); delta.normalize().multiplyScalar(off); me.pos.add(delta);
@@ -336,6 +343,59 @@ function stepMe(dt) {
   else pr.classList.add('hidden');
 }
 let nearAgent = null, nearDoor = null;
+// ------------------------------------------------------------ people keep their distance
+// Everyone has a 0.26 m body: overlapping people ease apart, people walking head-on both bear right to pass,
+// and nobody is ever pushed off walkable ground. You (the player) are solid to them and they are solid to you.
+const BODY = 0.26;
+function blockedBy(a, dir, dist) {
+  if (dist < 1e-3) return null; const p = a.obj.position; const dx = dir.x / dist, dz = dir.z / dist;
+  for (const b of agents.values()) {
+    if (b === a || b.away) continue; const q = b.obj.position; if (Math.abs(q.y - p.y) > 1.1) continue;
+    const rx = q.x - p.x, rz = q.z - p.z; const r = Math.hypot(rx, rz); if (r > 0.62 || r < 0.3) continue; // already brushing: let them ease apart instead of freezing
+    if ((rx * dx + rz * dz) / r < 0.45) continue;                    // not in front of me
+    if (b.path.length) { const t = b.path[0]; const bx = t.x - q.x, bz = t.z - q.z; const bl = Math.hypot(bx, bz) || 1;
+      if ((bx * dx + bz * dz) / bl < -0.3 && a.key < b.key) continue; } // head-on: the one with right of way keeps going
+    return b;
+  }
+  if (walking && me.person) { const q = me.person.group.position; const rx = q.x - p.x, rz = q.z - p.z; const r = Math.hypot(rx, rz); if (r < 0.65 && Math.abs(q.y - p.y) < 1.1 && (rx * dx + rz * dz) / r > 0.45) return me; }
+  return null;
+}
+const _off = new THREE.Vector3();
+function nudge(a, dx, dz) {
+  const p = a.obj.position; _off.set(p.x + dx, p.y, p.z + dz);
+  if (NAV) { const k = NAV.nearest(_off, 0.16); if (k < 0 || Math.abs(NAV.Y[k] - p.y) > 0.3) return false; }
+  p.x += dx; p.z += dz; return true;
+}
+function crowd(dt) {
+  const list = []; for (const a of agents.values()) if (!a.away && !a.frozen) list.push(a);
+  const pl = walking && me.person ? me.person.group.position : null;
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i], pa = a.obj.position; const movingA = a.path.length > 0;
+    for (let j = i + 1; j < list.length; j++) {
+      const b = list[j], pb = b.obj.position; if (Math.abs(pa.y - pb.y) > 1.2) continue;
+      let dx = pb.x - pa.x, dz = pb.z - pa.z; const d = Math.hypot(dx, dz); const min = BODY * 2;
+      if (d < min) { // overlapping: ease apart, the one walking gives way more
+        if (d < 1e-4) { dx = Math.random() - 0.5; dz = Math.random() - 0.5; } const n = Math.hypot(dx, dz); dx /= n; dz /= n;
+        const push = Math.min(min - d, 0.6 * dt * 4 + 0.02); const movingB = b.path.length > 0; const wa = movingA && !movingB ? 0.8 : !movingA && movingB ? 0.2 : 0.5;
+        if (!nudge(a, -dx * push * wa, -dz * push * wa)) nudge(b, dx * push, dz * push); if (!nudge(b, dx * push * (1 - wa), dz * push * (1 - wa))) nudge(a, -dx * push, -dz * push);
+      }
+      // walking towards each other: both drift to their own right
+      if (d < 1.3 && movingA && b.path.length) {
+        const ta = a.path[0], tb = b.path[0]; const ax = ta.x - pa.x, az = ta.z - pa.z, bx = tb.x - pb.x, bz = tb.z - pb.z; const la = Math.hypot(ax, az) || 1, lb = Math.hypot(bx, bz) || 1;
+        if ((ax * bx + az * bz) / (la * lb) < -0.5 && (ax * (pb.x - pa.x) + az * (pb.z - pa.z)) > 0) { const s = 0.5 * dt * Math.min(3, speed || 1); nudge(a, -az / la * s, ax / la * s); nudge(b, -bz / lb * s, bx / lb * s); }
+      }
+    }
+    if (pl && Math.abs(pa.y - pl.y) < 1.2) { // the player is solid: people step aside
+      const dx = pa.x - pl.x, dz = pa.z - pl.z; const d = Math.hypot(dx, dz); const min = BODY + 0.3;
+      if (d < min && d > 1e-4) { const push = Math.min(min - d, 0.05); nudge(a, dx / d * push, dz / d * push); }
+    }
+    // stuck behind someone for a while? find another way round
+    if (movingA) { const tgt = a.path[0]; const dd = Math.hypot(tgt.x - pa.x, tgt.z - pa.z);
+      if (a._best == null || dd < a._best - 0.05) { a._best = dd; a._stuck = 0; } else if ((a._stuck += dt * Math.max(1, speed || 1)) > 2.5) { a._stuck = 0; a._best = null; const goal = a.path[a.path.length - 1]; const r = NAV && NAV.route(pa, goal); if (r && r.length) { a.path = r; a.pathNames = r.map(() => null); } }
+      if (dd < 0.05) a._best = null;
+    } else a._best = null;
+  }
+}
 function useDoor(d) { W.setDoor(d, d.want === 0, true); }
 // NPCs open doors as they reach them and let them swing shut behind; doors you opened stay open until you close them
 function tendDoors(dt) {
@@ -479,6 +539,7 @@ function loop() {
     tick(gdt);
     if (walking) stepMe(dt);
     tendDoors(dt);
+    crowd(dt);
     const upperHidden = !groups.upper.visible;
     for (const a of agents.values()) { a.update(dt, dlgOpen ? 0 : speed); a.obj.visible = !a.away && !(upperHidden && a.obj.position.y > 3) && !(!groups.roof.visible && a.obj.position.y > 6.2 && walking); a.bangObj.visible = a.obj.visible && a.hasConcern; a.tagObj.visible = a.obj.visible && a.showTag && walking; }
     W.updateSky(st.minute, st.flags, st.upgrades.battery != null); updateHud();

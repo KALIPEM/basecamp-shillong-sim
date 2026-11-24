@@ -73,7 +73,7 @@ export function loadNavData(text, key) {
   return makeNav(X, Y, Z, C, col, nx, nz, x0, z0);
 }
 // fingerprint of the collision mesh, so a stale grid is never used
-export function navKey(collider) { const p = collider.geometry.attributes.position; const b = collider.geometry.boundsTree.getBoundingBox(new THREE.Box3()); let h = 0; for (let i = 0; i < p.count; i += 97) h = (h * 31 + Math.round(p.getX(i) * 100 + p.getY(i) * 10 + p.getZ(i))) | 0; return `nav1:${p.count}:${b.min.x.toFixed(2)}:${b.max.z.toFixed(2)}:${h}`; }
+export function navKey(collider) { const p = collider.geometry.attributes.position; const b = collider.geometry.boundsTree.getBoundingBox(new THREE.Box3()); let h = 0; for (let i = 0; i < p.count; i++) h = (h * 31 + Math.round(p.getX(i) * 100) * 7 + Math.round(p.getY(i) * 100) * 13 + Math.round(p.getZ(i) * 100)) | 0; return `nav2:${p.count}:${b.min.x.toFixed(2)}:${b.max.z.toFixed(2)}:${h}`; }
 
 class Heap { constructor() { this.a = []; this.p = []; }
   push(v, pr) { const a = this.a, p = this.p; a.push(v); p.push(pr); let i = a.length - 1; while (i > 0) { const q = (i - 1) >> 1; if (p[q] <= pr) break; a[i] = a[q]; p[i] = p[q]; i = q; } a[i] = v; p[i] = pr; }
