@@ -28,3 +28,9 @@ three.js and three-mesh-bvh load from the jsDelivr CDN.
 ## Deploy
 
 Netlify: import this repo, leave the build command empty, and set the publish directory to `.` (already set in `netlify.toml`).
+
+## Credits
+
+- Furniture and plants: [Kenney](https://kenney.nl) Furniture Kit and Nature Kit (CC0)
+- People: [Quaternius](https://quaternius.com) Ultimate Animated Character Pack (CC0)
+- Engine: three.js

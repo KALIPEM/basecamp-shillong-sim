@@ -67,6 +67,7 @@ const inBox = (b) => P(b[0] + rnd() * (b[1] - b[0]), b[2] + rnd() * (b[3] - b[2]
 function bedPoint(bed) { const d = E.dormOfBed(bed), yb = DORM_YB[d]; const bunk = Math.floor((bed % 6) / 2); return P([10.8, 19.3, 27.8][bunk] + (bed % 2 ? 1.2 : -1.2), yb + 11.3, 11.35); }
 
 // ============================================================ NPCs
+const FEMALE = new Set(['Daphisha', 'Iohbha', 'Larisa', 'Pynshngain', 'Pallavi', 'Rimpi', 'Neisa', 'Atono', 'Ananya', 'Meera', 'Nisha', 'Tara', 'Zoya', 'Riya', 'Aditi', 'Esha', 'Sana', 'Trisha', 'Debolina', 'Lakshmi', 'Neethu', 'Lena', 'Mia', 'Yuki', 'Ivy', 'Sara']);
 const agentLayer = new THREE.Group(); scene.add(agentLayer);
 const agents = new Map();
 class Agent {
@@ -74,7 +75,7 @@ class Agent {
     this.key = key; this.kind = kind; this.info = info || {};
     const list = W.SHIRTS[kind] || W.SHIRTS.visitor; const seed = (info.look || Math.floor(rnd() * 1e6)) + 1;
     const shirt = kind === 'staff' ? '#ecebe4' : list[seed % list.length];
-    this.p = W.makePerson({ shirt, seed, apron: ['chef', 'gardener'].includes(info.role) });
+    this.p = W.makePerson({ shirt, seed, apron: ['chef', 'gardener'].includes(info.role), role: info.role, kind, female: FEMALE.has(info.first || (info.name || '').split(' ')[0]) });
     this.obj = this.p.group; this.obj.userData.agent = this; this.obj.traverse(o => { o.userData.agent = this; });
     agentLayer.add(this.obj);
     const b = document.createElement('div'); b.className = 'bang'; b.innerHTML = '<span>!</span>'; this.bangEl = b;
@@ -228,7 +229,7 @@ const tBox = new THREE.Box3(), tSeg = new THREE.Line3(), tV = new THREE.Vector3(
 let savedCam = null;
 function makeMe() {
   if (me.person) { agentLayer.remove(me.person.group); }
-  me.person = W.makePerson({ shirt: st.look || '#c8612e', seed: 4242 });
+  me.person = W.makePerson({ shirt: st.look || '#c8612e', seed: 4242, role: 'owner', female: false });
   const t = document.createElement('div'); t.className = 'tagname me'; t.textContent = st.playerName || 'You'; const to = new CSS2DObject(t); to.position.set(0, 1.95, 0); me.person.group.add(to); me.tag = t; me.tagObj = to; to.visible = false;
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.32, 0.4, 32), new THREE.MeshBasicMaterial({ color: '#f2b81c', transparent: true, opacity: 0.8, depthWrite: false })); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.02; me.person.group.add(ring);
   agentLayer.add(me.person.group); me.person.group.visible = false;
@@ -557,6 +558,7 @@ const TABS = {
     <p class="muted"><b>Money:</b> beds and monthly stays, the café menu, desk passes, rentals, tours, laundry (guests, locals and contracts), server hosting, events and room hire. Costs are itemised: kitchen and café ingredients, LPG, salaries, power and Wi-Fi, linen, booking commissions, GST, upkeep and licences.</p>
     <p class="muted"><b>Seasons:</b> busy in spring and Oct–Nov, quiet and stormy in the monsoon. Winters are cold, so blankets and hot water matter.</p>
     <h3>Assumptions</h3><p class="muted">From your plan: ₹1,400/night with meals, ₹250/night monthly, electricity ₹15k, cleaners ₹6k. Estimates: chef ₹18k, ops staff ₹30k, maintenance ₹10k, insurance ₹4k, licences ₹2k + ₹12k yearly, software ₹2.5k, Wi-Fi ₹1.5k a line, fibre ₹4k, booking commission 15%, GST 5% on rooms and food and 18% on services, ingredients ₹40 breakfast and ₹70 dinner, LPG ₹1,800 a cylinder, linen ₹25 a night, yearly repaint ₹60k, ₹1.5L/month loan in Realistic mode.</p>
+    <h3>Credits</h3><p class="muted">Furniture and plants: Kenney Furniture Kit and Nature Kit (kenney.nl). People: Quaternius Ultimate Animated Character Pack (quaternius.com). All CC0, free to use. Building designed in Blender, rendered with three.js.</p>
     <h3>Game</h3><div class="actions"><button class="btn ghost" id="restart">Start over</button></div>`;
   },
 };

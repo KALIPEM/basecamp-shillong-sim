@@ -7,6 +7,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { MeshBVH } from 'three-mesh-bvh';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 export const FT = 0.3048;
 export const P = (x, y, z = 0) => new THREE.Vector3(x * FT, z * FT, -y * FT);
@@ -15,7 +16,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const mobile = matchMedia('(max-width: 820px)').matches || /Android|iPhone|iPad/.test(navigator.userAgent);
 
 // ------------------------------------------------------------ renderer
-export const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+export const renderer = new THREE.WebGLRenderer({ antialias: !/[?&]aa=0/.test(location.search), powerPreference: 'high-performance', preserveDrawingBuffer: /film/.test(location.pathname) });
 renderer.setPixelRatio(Math.min(devicePixelRatio, mobile ? 1.5 : 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.9;
@@ -142,13 +143,122 @@ function boxUV(g) {
   g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
 }
 
+
+// ------------------------------------------------------------ free CC0 assets (Kenney furniture + nature kits, Quaternius characters)
+// Blender's placeholder furniture is swapped for these at load time: each piece's bounding box tells us where the asset goes.
+export const ASSETS = {}; let ANIMS = []; export const propBoxes = {};
+async function loadAssets(onProgress) {
+  try {
+    const res = await fetch('./assets.b64.txt'); if (!res.ok) throw new Error('no assets');
+    const total = +res.headers.get('content-length') || 5700000; const reader = res.body.getReader(); const chunks = []; let got = 0;
+    for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); got += value.length; onProgress(Math.min(1, got / total)); }
+    const map = JSON.parse(new TextDecoder().decode(await new Blob(chunks).arrayBuffer()));
+    const loader = new GLTFLoader();
+    await Promise.all(Object.entries(map).map(async ([k, b64]) => {
+      const bin = atob(b64); const buf = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      const g = await new Promise((r2, rj) => loader.parse(buf.buffer, './', r2, rj));
+      if (k === 'c:Casual_Male') ANIMS = g.animations;
+      g.scene.updateMatrixWorld(true);
+      ASSETS[k] = { scene: g.scene, box: new THREE.Box3().setFromObject(g.scene) };
+      g.scene.traverse(o => { if (o.isMesh && o.material && !k.startsWith('c:')) { const m = o.material; m.envMapIntensity = 0.6; m.roughness = 0.8; m.metalness = 0;
+        const c = RECOLOR[m.name] || (k === 'n:crops_bambooStageB' && m.name === 'grass' ? '#7f9a3e' : null); if (c) m.color.set(c); if (/^metal/.test(m.name)) { m.roughness = 0.45; m.metalness = 0.5; } } });
+    }));
+  } catch (e) { console.warn('CC0 assets unavailable, keeping simple shapes', e); }
+}
+// Kenney's kits are pastel; pull them toward the hostel's real palette (teak, slate fabric, Shillong pine greens)
+const RECOLOR = { wood: '#9b6b44', woodDark: '#6b4a32', carpet: '#55626d', carpetWhite: '#e9e5dc', metal: '#b9bdc0', metalLight: '#e6e8e7', metalMedium: '#5b6367', metalDark: '#2f3437',
+  plant: '#3f7a34', grass: '#4f8636', leafsDark: '#2d5128', leafsGreen: '#4a7a33', woodBark: '#5d4332', woodBarkDark: '#4d382b', leafsFall: '#d9822f', colorRed: '#c9443f', colorYellow: '#e2b53c', colorPurple: '#8a5bb0' };
+const BUSHES = ['n:plant_bush', 'n:plant_bushDetailed', 'n:plant_bushLarge'], FLOWERS = ['n:flower_redA', 'n:flower_yellowA', 'n:flower_purpleA'], CROPS = ['n:crops_leafsStageB', 'n:crop_carrot', 'n:crops_cornStageB', 'n:crop_pumpkin', 'n:crops_leafsStageB'];
+// [name regex (group 1 = which piece it belongs to), asset(s), how to fit, which way it faces]
+const PROPS = [
+  [/^(Dorm[A-E]_Bunk\d+)_/, 'f:bedBunk', 'box'],
+  [/^((?:Chef|F1|F2)_Bed)_/, 'f:bedDouble', 'box'],
+  [/^(Desk_\d+_\d+|Booth_\d_Desk|Chef_Desk)_/, 'f:desk', 'box', 'chair'],
+  [/^(CoChair_\d+_\d+|Booth_\d_Chair|Meet_[NS]\d|Chef_Chair|Reception_Stool)_/, 'f:chairDesk', 'box', 'back'],
+  [/^(Act_Chair_\d_\d)_/, 'f:chair', 'box', 'back'],
+  [/^(Dorm[A-E]_WorkChair\d|F[12]_DeskChair)$/, 'f:chairDesk', 'box', 'table'],
+  [/^(Deck_Chair_\d_\d|Dorm[A-E]_WBal_Chair\d|Balcony_Chair_\d)$/, 'f:chair', 'box', 'table'],
+  [/^(Cafe_InStool_\d_\d|Pav_Stool_\d|Dorm[A-E]_Stool\d)$/, 'f:stoolBar', 'box'],
+  [/^(Cafe_InTable_\d|Deck_Table_\d|Roof_Table_\d|Dorm[A-E]_WBal_Table)(?:_leg)?$/, 'f:tableRound', 'box'],
+  [/^(Dining_Table\d|Meeting_Table|Folding_Table|Dorm[A-E]_Table)_(?:leg\d|top)$/, 'f:table', 'box'],
+  [/^(Pav_Coffee|Reception_Coffee)_/, 'f:tableCoffee', 'box'],
+  [/^(Pav_Sofa\d|Reception_Sofa|F[12]_Sofa)(?:_?Back)?$/, 'f:loungeSofa', 'box', 'back'],
+  [/^(Washer_\d)(?:_door)?$/, 'f:washer', 'box', 'door'],
+  [/^(Toilet_\d)$/, 'f:toilet', 'box'],
+  [/^(Pav_Plant)(?:er)?_(\d)$/, 'f:pottedPlant', 'u'],
+  [/^(Planter_\d)_Green$/, BUSHES, 'scatter'],
+  [/^(Tree_\d)_/, ['n:tree_pineTallA_detailed', 'n:tree_pineTallB_detailed', 'n:tree_detailed'], 'h'],
+  [/^(WG\d_Bamboo)(?:Foliage)?_(\d+)/, 'n:crops_bambooStageB', 'hx'],
+  [/^(WG\d_BambooLeaf_\d+)$/, null, 'hide'],
+  [/^(WG\d_Shrub_\d+)$/, BUSHES, 'u'],
+  [/^(WG\d_Flower_\d+)$/, FLOWERS, 'u'],
+  [/^(Veg_\d+_\d+)$/, CROPS, 'u'],
+];
+const propOf = (n) => { for (const r of PROPS) { const m = r[0].exec(n); if (m) return { key: m[1] + (m[2] && /^\d+$/.test(m[2]) ? '_' + m[2] : ''), rule: r }; } return null; };
+const hsh = (str) => { let h = 2166136261; for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 16777619); return (h >>> 0) / 4294967296; };
+function placeProps(inst, anchors) {
+  const buckets = new Map(); const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), S = new THREE.Vector3(), C = new THREE.Vector3(), Y = new THREE.Vector3(0, 1, 0);
+  const add = (asset, grp, pos, yaw, sx, sy, sz, center) => {
+    const a = ASSETS[asset]; if (!a) return false;
+    const off = center ? a.box.getCenter(new THREE.Vector3()).setY(a.box.min.y) : new THREE.Vector3(0, a.box.min.y, 0);
+    a.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      const g = o.geometry.clone(); for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal') g.deleteAttribute(k);
+      if (!g.index) { const ix = new Uint32Array(g.attributes.position.count); for (let i = 0; i < ix.length; i++) ix[i] = i; g.setIndex(new THREE.BufferAttribute(ix, 1)); }
+      g.applyMatrix4(o.matrixWorld); g.translate(-off.x, -off.y, -off.z);
+      g.applyMatrix4(M.compose(pos, Q.setFromAxisAngle(Y, yaw), S.set(sx, sy, sz)));
+      const mats = Array.isArray(o.material) ? o.material : [o.material]; const mat = mats[0];
+      const key = grp + '|' + mat.uuid; if (!buckets.has(key)) buckets.set(key, { grp, mat, geos: [] }); buckets.get(key).geos.push(g);
+    });
+    return true;
+  };
+  const done = new Set();
+  for (const [key, it] of inst) {
+    const [, asset, mode, face] = it.rule; const b = it.box; if (mode === 'hide') { done.add(key); continue; }
+    const size = b.getSize(new THREE.Vector3()), ctr = b.getCenter(new THREE.Vector3()); const r = hsh(key);
+    const pick = Array.isArray(asset) ? asset[Math.floor(r * asset.length)] : asset; const A = ASSETS[pick]; if (!A) continue;
+    const ms = A.box.getSize(new THREE.Vector3()); const bottom = new THREE.Vector3(ctr.x, b.min.y, ctr.z);
+    let ok = false;
+    if (mode === 'box') {
+      let dir = null; // which way the front should point
+      if (face === 'back' && it.back) { const bc = it.back.getCenter(new THREE.Vector3()); dir = ctr.clone().sub(bc); }
+      else if (face === 'door' && it.back) { dir = it.back.getCenter(new THREE.Vector3()).sub(ctr); }
+      else if (face === 'table' || face === 'chair') { let best = null, bd = 9; for (const a of anchors[face]) { const d = a.distanceTo(ctr); if (d > 0.05 && d < bd) { bd = d; best = a; } } if (best) dir = best.clone().sub(ctr); }
+      let yaw;
+      if (dir && (Math.abs(dir.x) > 1e-3 || Math.abs(dir.z) > 1e-3)) { yaw = Math.abs(dir.x) > Math.abs(dir.z) ? (dir.x > 0 ? Math.PI / 2 : -Math.PI / 2) : (dir.z > 0 ? 0 : Math.PI); }
+      else yaw = ((ms.x > ms.z) === (size.x > size.z)) ? 0 : Math.PI / 2;
+      const swap = Math.abs(Math.sin(yaw)) > 0.5;
+      ok = add(pick, it.grp, bottom, yaw, (swap ? size.z : size.x) / ms.x, size.y / ms.y, (swap ? size.x : size.z) / ms.z, true);
+    } else if (mode === 'h') { const k = size.y / ms.y; ok = add(pick, it.grp, bottom, r * 6.28, k, k, k, true); }
+    else if (mode === 'hx') { const k = Math.min(size.x / ms.x, size.z / ms.z) * 1.1; ok = add(pick, it.grp, bottom, r * 6.28, k, size.y / ms.y, k, true); }
+    else if (mode === 'u') { const k = Math.min(size.x / ms.x, size.z / ms.z, size.y / ms.y) * 1.15; ok = add(pick, it.grp, bottom, r * 6.28, k, k, k, true); }
+    else if (mode === 'scatter') {
+      const n = Math.max(2, Math.min(9, Math.round(size.x * size.z / 0.5))); const cols = Math.max(1, Math.round(Math.sqrt(n * size.x / Math.max(0.1, size.z)))); const rows = Math.ceil(n / cols);
+      for (let i = 0; i < n; i++) { const p2 = BUSHES[Math.floor(hsh(key + i) * 3)]; const m2 = ASSETS[p2]?.box.getSize(new THREE.Vector3()); if (!m2) continue;
+        const cell = Math.min(size.x / cols, size.z / rows); const k = cell / Math.max(m2.x, m2.z) * 1.2;
+        ok = add(p2, it.grp, new THREE.Vector3(b.min.x + (i % cols + 0.5) * size.x / cols, b.min.y + size.y * 0.6, b.min.z + (Math.floor(i / cols) + 0.5) * size.z / rows), hsh(key + 'r' + i) * 6.28, k, k, k, true) || ok; }
+    }
+    if (ok) done.add(key);
+  }
+  for (const bk of buckets.values()) {
+    const merged = mergeGeometries(bk.geos, false); if (!merged) continue;
+    const mesh = new THREE.Mesh(merged, bk.mat); mesh.castShadow = true; mesh.receiveShadow = true; mesh.userData.grp = bk.grp;
+    groups[bk.grp].add(mesh); pickables.push(mesh);
+  }
+  return done;
+}
+
 export async function loadModel(onProgress) {
+  let pm = 0, pa = 0; const prog = () => onProgress(Math.min(1, pm * 0.47 + pa * 0.53));
+  const assetsP = loadAssets((f) => { pa = f; prog(); });
   const res = await fetch('./model.b64.txt');
   const total = +res.headers.get('content-length') || 4950000; const reader = res.body.getReader(); const chunks = []; let got = 0;
-  for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); got += value.length; onProgress(Math.min(1, got / total)); }
+  for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); got += value.length; pm = Math.min(1, got / total); prog(); }
   const text = new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
   const bin = atob(text.trim()); const buf = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
   const gltf = await new Promise((res2, rej) => new GLTFLoader().parse(buf.buffer, './', res2, rej));
+  await assetsP;
+  const haveAssets = Object.keys(ASSETS).length > 0; const inst = new Map(); const anchors = { table: [], chair: [] }; const held = [];
   const buckets = new Map(); const solid = [];
   gltf.scene.updateMatrixWorld(true);
   gltf.scene.traverse((o) => {
@@ -163,15 +273,24 @@ export async function loadModel(onProgress) {
     }
     const grp = classify(name);
     const g = o.geometry.clone(); g.applyMatrix4(o.matrixWorld);
+    if (/(Table|Desk_\d|Desk_top|WorkCounter_top|Counter)/.test(name)) { g.computeBoundingBox(); anchors.table.push(g.boundingBox.getCenter(new THREE.Vector3())); }
+    if (/(CoChair_\d+_\d+_seat|Booth_\d_Chair_seat|Chef_Chair_seat|WorkChair|DeskChair)/.test(name)) { g.computeBoundingBox(); anchors.chair.push(g.boundingBox.getCenter(new THREE.Vector3())); }
+    const pr = haveAssets ? propOf(name) : null;
     for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal') g.deleteAttribute(k);
     if (!g.attributes.normal) g.computeVertexNormals();
     if (!g.index) { const a = new Uint32Array(g.attributes.position.count); for (let i = 0; i < a.length; i++) a[i] = i; g.setIndex(new THREE.BufferAttribute(a, 1)); }
     boxUV(g);
     const mat = o.material; const key = grp + '|' + mat.uuid;
-    if (!buckets.has(key)) buckets.set(key, { grp, mat, geos: [] }); buckets.get(key).geos.push(g);
+    if (pr) { g.computeBoundingBox(); let it = inst.get(pr.key); if (!it) inst.set(pr.key, it = { rule: pr.rule, grp, box: new THREE.Box3(), back: null, parts: [] }); it.box.union(g.boundingBox); it.parts.push({ key, grp, mat, g });
+      if (/(back|Back|door)$/.test(name)) { it.back = (it.back || new THREE.Box3()).union(g.boundingBox); } }
+    else { if (!buckets.has(key)) buckets.set(key, { grp, mat, geos: [] }); buckets.get(key).geos.push(g); }
     const see = /Glass|Polycarbonate|Label/.test(mat.name) || /^(Tree_|WG\d_Bamboo|WG\d_Flower|Veg_|Umbrella)/.test(name);
     if (!see) { const c = new THREE.BufferGeometry(); c.setAttribute('position', g.attributes.position); c.setIndex(g.index); solid.push(c); }
   });
+  if (inst.size) { // swap placeholders for the CC0 models; anything that couldn't be placed keeps its Blender shape
+    const placed = placeProps(inst, anchors); for (const [k, it] of inst) propBoxes[k] = it.box;
+    for (const [k, it] of inst) if (!placed.has(k)) for (const p of it.parts) { if (!buckets.has(p.key)) buckets.set(p.key, { grp: p.grp, mat: p.mat, geos: [] }); buckets.get(p.key).geos.push(p.g); }
+  }
   const seen = new Set();
   for (const b of buckets.values()) {
     if (!seen.has(b.mat)) { prepMaterial(b.mat); if (/Glass/.test(b.mat.name)) glassMats.push(b.mat); seen.add(b.mat); }
@@ -221,7 +340,7 @@ export const SHIRTS = {
   nightly: ['#2a9d8f', '#3a8fb7', '#4f7cac', '#2f9e7a', '#5b8c9a'], monthly: ['#e76f51', '#d9603b', '#c75b39', '#e0873e', '#cc6a4c'],
   staff: ['#f1f1ec'], visitor: ['#8d99ae', '#9a8f80', '#7f8c8d'], owner: ['#e9c46a'], local: ['#7a6a9a', '#6a7a5a'],
 };
-export function makePerson({ shirt, seed = 1, apron = false }) {
+export function makeSimplePerson({ shirt, seed = 1, apron = false }) {
   let s = seed % 2147483647 || 7; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647; const pk = (a) => a[Math.floor(rnd() * a.length)];
   const skin = pk(SKIN), hair = pk(HAIR), pants = pk(PANTS); const tall = 0.92 + rnd() * 0.14;
   const torso = colored(new THREE.CapsuleGeometry(0.17, 0.36, 4, 10), shirt); torso.scale(1, 1, 0.72); torso.translate(0, 1.18, 0);
@@ -242,12 +361,57 @@ export function makePerson({ shirt, seed = 1, apron = false }) {
   g.traverse(o => { if (o.isMesh) { o.castShadow = true; } });
   return { group: g, legL, legR, armL, armR, body };
 }
-export function animatePerson(p, moving, phase, dt) {
+function animateSimplePerson(p, moving, phase, dt) {
   const k = moving ? 1 : 0; const sw = Math.sin(phase) * 0.6 * k;
   const lerp = (a, b) => a + (b - a) * Math.min(1, dt * 10);
   p.legL.rotation.x = lerp(p.legL.rotation.x, sw); p.legR.rotation.x = lerp(p.legR.rotation.x, -sw);
   p.armL.rotation.x = lerp(p.armL.rotation.x, -sw * 0.8); p.armR.rotation.x = lerp(p.armR.rotation.x, sw * 0.8);
   p.body.position.y = moving ? Math.abs(Math.cos(phase)) * 0.025 : lerp(p.body.position.y, 0);
+}
+
+// ------------------------------------------------------------ people: Quaternius rigged characters (CC0), procedural fallback
+const OUTFIT = {
+  chef: ['Chef_Male', 'Chef_Female'], gardener: ['Worker_Male', 'Worker_Female'], cleaner: ['Worker_Male', 'Worker_Female'], laundry: ['Worker_Male', 'Worker_Female'],
+  techie: ['Casual3_Male', 'Casual3_Female'], reception: ['Casual2_Male', 'Casual2_Female'], community: ['Casual2_Male', 'Casual2_Female'], photographer: ['Casual3_Male', 'Casual3_Female'],
+  owner: ['Suit_Male', 'Suit_Female'],
+  guest: [['Casual_Male', 'Casual2_Male', 'Casual3_Male', 'Casual_Bald'], ['Casual_Female', 'Casual2_Female', 'Casual3_Female']],
+};
+const TINT_MAT = /^(Shirt|Clothes|Top|Jacket|Sweater|Hoodie)$/i;
+export function makePerson(opts) {
+  const { shirt, seed = 1, apron = false, role, female, kind } = opts;
+  if (!ASSETS['c:Casual_Male'] || !ANIMS.length) return makeSimplePerson({ shirt, seed, apron });
+  let s = seed % 2147483647 || 7; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647; const pk = (a) => a[Math.floor(rnd() * a.length)];
+  const fem = female ?? rnd() < 0.45; rnd();
+  const o = OUTFIT[role] || OUTFIT[kind] || OUTFIT.guest;
+  let name = Array.isArray(o[0]) ? pk(o[fem ? 1 : 0]) : o[fem ? 1 : 0];
+  if (!ASSETS['c:' + name]) name = fem ? 'Casual_Female' : 'Casual_Male';
+  const src = ASSETS['c:' + name].scene; const model = SkeletonUtils.clone(src);
+  const skin = new THREE.Color(pk(SKIN)), hair = new THREE.Color(pk(HAIR)); const tintShirt = !OUTFIT[role] && shirt;
+  model.traverse((m) => {
+    if (!m.isMesh) return; m.castShadow = true; m.frustumCulled = false;
+    const fix = (mt) => { const c = mt.clone(); c.envMapIntensity = 0.5; c.roughness = 0.8; c.metalness = 0;
+      if (/^Skin$/i.test(mt.name)) c.color.copy(skin).convertSRGBToLinear();
+      else if (/^Hair$/i.test(mt.name)) c.color.copy(hair).convertSRGBToLinear();
+      else if (tintShirt && TINT_MAT.test(mt.name)) c.color.set(shirt).convertSRGBToLinear();
+      return c; };
+    m.material = Array.isArray(m.material) ? m.material.map(fix) : fix(m.material);
+  });
+  const tall = 0.93 + rnd() * 0.12; const k = 1.72 * tall / (ASSETS['c:' + name].box.max.y - ASSETS['c:' + name].box.min.y);
+  model.scale.setScalar(k);
+  const g = new THREE.Group(); g.add(model);
+  const mixer = new THREE.AnimationMixer(model); const act = {};
+  for (const c of ANIMS) act[c.name] = mixer.clipAction(c);
+  act.Idle.play(); act.Idle.time = rnd() * 2;
+  const dummy = new THREE.Object3D(); // old procedural rigs had arm/leg handles; keep harmless stand-ins
+  return { group: g, model, mixer, act, cur: 'Idle', rigged: true, legL: dummy, legR: dummy, armL: dummy, armR: new THREE.Object3D(), body: dummy, lastPhase: 0 };
+}
+export function animatePerson(p, moving, phase, dt, opt) {
+  if (!p.rigged) return animateSimplePerson(p, moving, phase, dt);
+  const want = opt && opt.pose ? opt.pose : moving ? (opt && opt.carry ? 'Walk_Carry' : 'Walk') : 'Idle';
+  if (want !== p.cur && p.act[want]) { const from = p.act[p.cur], to = p.act[want]; to.reset().play(); if (want === 'SitDown') { to.setLoop(THREE.LoopOnce, 1); to.clampWhenFinished = true; } from.crossFadeTo(to, 0.25, false); p.cur = want; }
+  if (opt && opt.time != null) { p.mixer.setTime(opt.time); return; } // film frames: absolute time
+  if (moving) { const dp = Math.max(0, phase - p.lastPhase); const sp = dt > 0 ? dp / dt : 7.7; p.act.Walk.timeScale = p.act.Walk_Carry.timeScale = Math.max(0.6, Math.min(2.6, sp / 7.7)); }
+  p.lastPhase = phase; p.mixer.update(Math.min(dt, 0.1));
 }
 
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); labelRenderer.setSize(innerWidth, innerHeight); });
